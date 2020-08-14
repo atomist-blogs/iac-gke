@@ -1,10 +1,19 @@
 {
     "name": "iac-gke",
     "devDependencies": {
-        "@types/node": "^10.0.0"
+        "@types/fs-extra": "^9.0.1",
+        "@types/js-yaml": "^3.12.5",
+        "@types/node": "^14.0.27",
+        "@types/node-fetch": "^2.5.7"
     },
     "dependencies": {
-        "@pulumi/pulumi": "^2.0.0",
-        "@pulumi/gcp": "^3.0.0"
+        "@pulumi/gcp": "^3.17.0",
+        "@pulumi/kubernetes": "^2.4.2",
+        "@pulumi/pulumi": "^2.8.2",
+        "fast-glob": "^3.2.4",
+        "fs-extra": "^9.0.1",
+        "js-yaml": "^3.14.0",
+        "node-fetch": "^2.6.0",
+        "public-ip": "^4.0.2"
     }
 }
