@@ -17,9 +17,6 @@
 import * as gcp from "@pulumi/gcp";
 import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
-import * as fs from "fs-extra";
-import * as yaml from "js-yaml";
-import fetch from "node-fetch";
 import * as path from "path";
 import * as publicip from "public-ip";
 import {
@@ -39,7 +36,6 @@ import {
 	zones,
 } from "./config";
 import { workloadIdentity, simpleRoleName } from "./lib/iam";
-import { resourcesFromSpecs } from "./lib/k8s";
 
 interface Resources {
 	clusterProject: gcp.organizations.Project;
@@ -491,70 +487,89 @@ users:
 		},
 	);
 
-	const specUrls = [
-		"https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.34.1/deploy/static/provider/cloud/deploy.yaml",
-		"https://github.com/jetstack/cert-manager/releases/download/v0.16.1/cert-manager.yaml",
-	];
-	const specsYamls: string[] = [];
-	for (const url of specUrls) {
-		specsYamls.push(await (await fetch(url)).text());
-	}
-	specsYamls.push(
-		await fs.readFile(path.join("k8s", "external-dns.yaml"), "utf8"),
-	);
-	const specs: any[] = [];
-	for (const specsYaml of specsYamls) {
-		specs.push(...yaml.safeLoadAll(specsYaml));
-	}
-	await resourcesFromSpecs({
-		options: {
-			dependsOn: [k8sClusterAdminRole, nginxIngressFirewall],
-			provider: k8sProvider,
-		},
-		specs,
-		transform: s => {
-			if (s?.kind === "ServiceAccount" && s.metadata?.name) {
-				if (
-					s.metadata.name === "cert-manager" ||
-					s.metadata.name === "external-dns"
-				) {
-					if (!s.metadata.annotations) {
-						s.metadata.annotations = {};
-					}
-					s.metadata.annotations["iam.gke.io/gcp-service-account"] =
-						workloadIdentityServiceAccounts[s.metadata.name].email;
+	const k8sYamlOpts = {
+		dependsOn: [k8sClusterAdminRole, nginxIngressFirewall],
+		provider: k8sProvider,
+	};
+	const tWorkloadIdentity = (spec: any): void => {
+		if (spec?.kind === "ServiceAccount" && spec.metadata?.name) {
+			if (
+				spec.metadata.name === "cert-manager" ||
+				spec.metadata.name === "external-dns"
+			) {
+				if (!spec.metadata.annotations) {
+					spec.metadata.annotations = {};
 				}
-			} else if (
-				s?.kind === "Service" &&
-				s?.metadata?.name === "ingress-nginx-controller" &&
-				s?.metadata?.namespace === "ingress-nginx"
-			) {
-				s.spec.loadBalancerIP = ingressIpAddress.address;
-			} else if (
-				s?.kind === "Deployment" &&
-				s?.metadata?.name === "external-dns" &&
-				s?.metadata?.namespace === "external-dns"
-			) {
-				s.spec.template.spec.containers[0].args = s.spec.template.spec.containers[0].args.map(
-					(a: string) => {
-						if (a.startsWith("--domain-filter=")) {
-							return a.replace(
-								/=.*/,
-								`=${dnsName.replace(/\.$/, "")}`,
-							);
-						} else if (a.startsWith("--google-project=")) {
-							return a.replace(/=.*/, `=${dnsProjectName}`);
-						} else if (a.startsWith("--txt-owner-id=")) {
-							return a.replace(/=.*/, `=${purpose}`);
-						} else {
-							return a;
-						}
-					},
-				);
+				spec.metadata.annotations["iam.gke.io/gcp-service-account"] =
+					workloadIdentityServiceAccounts[spec.metadata.name].email;
 			}
-			return s;
+		}
+	};
+	new k8s.yaml.ConfigFile(
+		"ingress-nginx",
+		{
+			file:
+				"https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.34.1/deploy/static/provider/cloud/deploy.yaml",
+			transformations: [
+				tWorkloadIdentity,
+				s => {
+					if (
+						s?.kind === "Service" &&
+						s?.metadata?.name === "ingress-nginx-controller" &&
+						s?.metadata?.namespace === "ingress-nginx"
+					) {
+						s.spec.loadBalancerIP = ingressIpAddress.address;
+					}
+				},
+			],
 		},
-	});
+		k8sYamlOpts,
+	);
+	new k8s.yaml.ConfigFile(
+		"cert-manager",
+		{
+			file:
+				"https://github.com/jetstack/cert-manager/releases/download/v0.16.1/cert-manager.yaml",
+		},
+		k8sYamlOpts,
+	);
+	new k8s.yaml.ConfigFile(
+		"external-dns",
+		{
+			file: path.join("k8s", "external-dns.yaml"),
+			transformations: [
+				tWorkloadIdentity,
+				s => {
+					if (
+						s?.kind === "Deployment" &&
+						s?.metadata?.name === "external-dns" &&
+						s?.metadata?.namespace === "external-dns"
+					) {
+						s.spec.template.spec.containers[0].args = s.spec.template.spec.containers[0].args.map(
+							(a: string) => {
+								if (a.startsWith("--domain-filter=")) {
+									return a.replace(
+										/=.*/,
+										`=${dnsName.replace(/\.$/, "")}`,
+									);
+								} else if (a.startsWith("--google-project=")) {
+									return a.replace(
+										/=.*/,
+										`=${dnsProjectName}`,
+									);
+								} else if (a.startsWith("--txt-owner-id=")) {
+									return a.replace(/=.*/, `=${purpose}`);
+								} else {
+									return a;
+								}
+							},
+						);
+					}
+				},
+			],
+		},
+		k8sYamlOpts,
+	);
 
 	return {
 		clusterProject,
